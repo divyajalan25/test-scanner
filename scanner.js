@@ -11,7 +11,7 @@
  */
 
 const APPS_SCRIPT_WEB_APP_URL =
-  "https://script.google.com/macros/s/AKfycbxP5z-9LCbkapX9nvpf19GgRGysUM4ek9SPzCPY5NXivCT-E7vSeikaiV64kyy9RBi8gw/exec";
+  "https://script.google.com/macros/s/AKfycbw0BusQs7Moill_KM9kD5duUUfj_4N6v6iJtz8yCgcdEaAr6DGpuiAoFHcMXOzalVZWzw/exec";
 
 /* DOM */
 const video = document.getElementById("video");
