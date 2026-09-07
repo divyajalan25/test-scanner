@@ -1,12 +1,11 @@
 /*
  * ================================================================
- * HOSTEL EVENT COMMITTEE — PERMANENT QR SCANNER ENGINE
+ * HOSTEL EVENT COMMITTEE — QR SCANNER ENGINE
+ * (single backend link + auto-retry on flaky wifi)
  * ================================================================
  *
- * UI / audio / camera controls are handled here.
- * The existing Apps Script verification endpoint is intentionally
- * preserved. Do NOT change the backend URL unless your deployment
- * changes.
+ * Paste your real Apps Script /exec URL below, replacing the
+ * placeholder text between the quotes.
  * ================================================================
  */
 
@@ -49,6 +48,16 @@ let facingMode = "environment";
 let currentTrack = null;
 
 const SAME_QR_COOLDOWN_MS = 2500;
+
+// Widened from 15000 so a request queued behind the backend's own
+// 15s lock-wait doesn't time out on the frontend before the backend
+// even finishes processing it.
+const JSONP_TIMEOUT_MS = 20000;
+
+// Auto-retry settings for flaky wifi — retries silently before
+// showing the operator any error.
+const MAX_BACKEND_RETRIES = 2;
+const RETRY_DELAY_MS = 1200;
 
 /* ================================================================
    STATUS + LIVE INDICATOR
@@ -143,6 +152,11 @@ function playErrorSound() {
 function playDetectSound() {
   initAudio();
   playTone(720, 0.07, 0.08, "sine", 0);
+}
+
+function playRetrySound() {
+  initAudio();
+  playTone(400, 0.08, 0.09, "triangle", 0);
 }
 
 function toggleSound() {
@@ -378,35 +392,56 @@ function handleQRDetected(rawValue) {
 }
 
 /* ================================================================
-   BACKEND REQUEST
+   BACKEND REQUEST (with auto-retry for flaky wifi)
    ================================================================ */
+
+function delay(ms) {
+  return new Promise(function (resolve) {
+    setTimeout(resolve, ms);
+  });
+}
 
 async function verifyToken(token) {
   const operator = operatorInput.value.trim();
 
-  try {
-    const url = new URL(APPS_SCRIPT_WEB_APP_URL);
+  const url = new URL(APPS_SCRIPT_WEB_APP_URL);
+  url.searchParams.set("action", "scan");
+  url.searchParams.set("token", token);
 
-    url.searchParams.set("action", "scan");
-    url.searchParams.set("token", token);
-
-    if (operator) {
-      url.searchParams.set("operator", operator);
-    }
-
-    const result = await requestJSONP(url.toString());
-    handleBackendResult(result);
-  } catch (error) {
-    requestInProgress = false;
-
-    setStatus(
-      "Unable to contact the scanner backend.",
-      "error"
-    );
-    cameraMessage.textContent = "Backend connection failed.";
-    setLive(false, "BACKEND ERROR");
-    playErrorSound();
+  if (operator) {
+    url.searchParams.set("operator", operator);
   }
+
+  for (let attempt = 1; attempt <= MAX_BACKEND_RETRIES + 1; attempt++) {
+    try {
+      if (attempt > 1) {
+        playRetrySound();
+        cameraMessage.textContent =
+          "Connection hiccup — retrying (" + attempt + "/" +
+          (MAX_BACKEND_RETRIES + 1) + ")...";
+        setStatus("RETRYING VERIFICATION...", "warning");
+        await delay(RETRY_DELAY_MS);
+      }
+
+      const result = await requestJSONP(url.toString());
+      handleBackendResult(result);
+      return; // success — stop retrying
+    } catch (error) {
+      // fall through and try again, unless this was the last attempt
+    }
+  }
+
+  // All attempts failed — genuinely tell the operator.
+  requestInProgress = false;
+
+  setStatus(
+    "Unable to contact the scanner backend after multiple attempts.",
+    "error"
+  );
+  cameraMessage.textContent =
+    "Backend connection failed. Check wifi and scan again.";
+  setLive(false, "BACKEND ERROR");
+  playErrorSound();
 }
 
 /* ================================================================
@@ -431,7 +466,7 @@ function requestJSONP(url) {
       cleanup();
 
       reject(new Error("Scanner backend timeout."));
-    }, 15000);
+    }, JSONP_TIMEOUT_MS);
 
     window[callbackName] = function (data) {
       if (finished) return;
@@ -515,7 +550,7 @@ function handleBackendResult(result) {
     showResult(
       "ALREADY SCANNED",
       "DUPLICATE QR CODE",
-      buildDetails(result),
+      (result.message || "") + (buildDetails(result) ? " — " + buildDetails(result) : ""),
       "warning"
     );
 
